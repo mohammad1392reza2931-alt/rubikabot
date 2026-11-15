@@ -1,9 +1,9 @@
 {
-  "name": "rubika-bot",
+  "name": "rubikabot",
   "main": "worker.js",
   "compatibility_date": "2025-06-01",
   "kv_namespaces": [
-    { "binding": "STATE", "id": "اینجا-آیدی-KV-رو-بنویس" }
+    { "binding": "STATE" }
   ],
   "triggers": { "crons": ["* * * * *"] }
 }
