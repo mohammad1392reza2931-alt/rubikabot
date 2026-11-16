@@ -160,9 +160,25 @@ async function loadState(env) {
   s.channels = s.channels || [];
   s.done = s.done || [];
   s.blocked = s.blocked || [];
+  s.names = s.names || {};
   return s;
 }
 const saveState = (env, s) => env.STATE.put("state", JSON.stringify(s));
+
+async function chatName(state, id) {
+  if (state.names[id]) return state.names[id];
+  try {
+    const j = await rub("getChat", { chat_id: id });
+    const c = (j.data && j.data.chat) || j.data || {};
+    const n = c.title || [c.first_name, c.last_name].filter(Boolean).join(" ") || c.username || "";
+    if (n) { state.names[id] = n; return n; }
+  } catch (e) {}
+  return "";
+}
+async function label(state, id) {
+  const n = await chatName(state, id);
+  return n || ("نام نامشخص (" + id + ")");
+}
 
 async function discover(state, log) {
   try {
@@ -248,12 +264,26 @@ export default {
       const log = [];
       await discover(state, log);
       await saveState(env, state);
-      const lines = state.channels.map((c, i) => (i + 1) + ") " + c.id + (c.footer ? "  | پیام: " + c.footer : ""));
+      const lines = [];
+      for (let i = 0; i < state.channels.length; i++) {
+        const c = state.channels[i];
+        lines.push((i + 1) + ") " + (await label(state, c.id)) + (c.footer ? "  | پیام: " + c.footer : ""));
+      }
+      await saveState(env, state);
       return new Response(["تعداد کانال‌ها: " + state.channels.length, ...lines, ...log].join("\n"), { headers: h });
+    }
+    if (u.searchParams.get("chatinfo")) {
+      const state = await loadState(env);
+      const c = state.channels[parseInt(u.searchParams.get("chatinfo"), 10) - 1];
+      if (!c) return new Response("کانالی با این شماره نیست.", { headers: h });
+      try { return new Response(JSON.stringify(await rub("getChat", { chat_id: c.id }), null, 1), { headers: h }); }
+      catch (e) { return new Response("getChat error: " + e.message, { headers: h }); }
     }
     if (u.searchParams.get("blocked")) {
       const state = await loadState(env);
-      const lines = state.blocked.map((id, i) => (i + 1) + ") " + id);
+      const lines = [];
+      for (let i = 0; i < state.blocked.length; i++) lines.push((i + 1) + ") " + (await label(state, state.blocked[i])));
+      await saveState(env, state);
       return new Response(["کانال‌های حذف‌شده: " + state.blocked.length, ...lines].join("\n"), { headers: h });
     }
     if (u.searchParams.get("unblock")) {
@@ -304,10 +334,11 @@ export default {
       const state = await loadState(env);
       const i = parseInt(u.searchParams.get("remove"), 10) - 1;
       if (state.channels[i]) {
+        const nm = await label(state, state.channels[i].id);
         state.blocked.push(state.channels[i].id);
         state.channels.splice(i, 1);
         await saveState(env, state);
-        return new Response("حذف شد. کانال‌های باقی‌مونده: " + state.channels.length, { headers: h });
+        return new Response("حذف شد: " + nm + "\nکانال‌های باقی‌مونده: " + state.channels.length, { headers: h });
       }
       return new Response("کانالی با این شماره نیست.", { headers: h });
     }
