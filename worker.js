@@ -251,6 +251,26 @@ export default {
       const lines = state.channels.map((c, i) => (i + 1) + ") " + c.id + (c.footer ? "  | پیام: " + c.footer : ""));
       return new Response(["تعداد کانال‌ها: " + state.channels.length, ...lines, ...log].join("\n"), { headers: h });
     }
+    if (u.searchParams.get("blocked")) {
+      const state = await loadState(env);
+      const lines = state.blocked.map((id, i) => (i + 1) + ") " + id);
+      return new Response(["کانال‌های حذف‌شده: " + state.blocked.length, ...lines].join("\n"), { headers: h });
+    }
+    if (u.searchParams.get("unblock")) {
+      const state = await loadState(env);
+      const v = u.searchParams.get("unblock");
+      const back = v === "all" ? state.blocked.slice() : [state.blocked[parseInt(v, 10) - 1]].filter(Boolean);
+      if (!back.length) return new Response("کانالی با این شماره توی لیست حذف‌شده‌ها نیست.", { headers: h });
+      let added = 0;
+      for (const id of back) {
+        if (state.channels.length >= CFG.MAX_CHANNELS) break;
+        state.blocked = state.blocked.filter(x => x !== id);
+        state.channels.push({ id, last: 0 });
+        added++;
+      }
+      await saveState(env, state);
+      return new Response(added + " کانال برگشت. تعداد کانال‌ها: " + state.channels.length, { headers: h });
+    }
     if (u.searchParams.get("banner")) {
       const state = await loadState(env);
       const i = parseInt(u.searchParams.get("banner"), 10) - 1;
