@@ -178,8 +178,9 @@ async function loadState(env) {
 }
 // فقط وقتی چیزی عوض شده باشه می‌نویسه (پلن رایگان فقط ۱۰۰۰ نوشتن در روز اجازه می‌ده)
 async function saveState(env, s) {
+  if (SNAPS.get(s) === JSON.stringify(s)) return true;
+  s.rev = (s.rev || 0) + 1;
   const j = JSON.stringify(s);
-  if (SNAPS.get(s) === j) return true;
   try { await env.STATE.put("state", j); SNAPS.set(s, j); return true; }
   catch (e) { console.log("KV put failed: " + e.message); return false; }
 }
@@ -281,7 +282,7 @@ async function buildState(env, st) {
   return {
     channels: st.channels.map((c, i) => ({ ...c, name: st.names[c.id] || "", bannerOn: bannerOn(c, i) })),
     blocked: st.blocked.map(x => ({ id: x, name: st.names[x] || "" })),
-    settings: S, logs: st.logs, doneCount: st.done.length,
+    settings: S, logs: st.logs, doneCount: st.done.length, rev: st.rev || 0,
     hasBanner: !!(await env.STATE.get("banner")), now: Date.now(),
   };
 }
@@ -360,10 +361,10 @@ export default {
     init(env);
     const u = new URL(request.url);
     const h = { "Content-Type": "text/plain; charset=utf-8" };
-    if (u.pathname === "/panel") return new Response(PANEL_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    if (u.pathname === "/panel") return new Response(PANEL_HTML, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
     if (u.pathname === "/api") {
       if (request.headers.get("x-key") !== CFG.SECRET) return new Response("{}", { status: 403 });
-      const j = { "Content-Type": "application/json; charset=utf-8" };
+      const j = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
       try { return new Response(JSON.stringify(await api(env, await request.json())), { headers: j }); }
       catch (e) { return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: j }); }
     }

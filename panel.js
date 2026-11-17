@@ -28,7 +28,7 @@ async function act(b,msg){try{toast('در حال انجام...');var r=await cal
 function ago(t){if(!t)return'هنوز پستی نرفته';var m=Math.round((D.now-t)/60000);if(m<1)return'همین الان';if(m<60)return m+' دقیقه پیش';var h=Math.round(m/60);return h<48?h+' ساعت پیش':Math.round(h/24)+' روز پیش'}
 function login(){$('app').innerHTML='<div class="card"><h1>ورود به پنل</h1><label>رمز (همان SECRET)</label><input id="pw" type="password"><div style="height:10px"></div><button class="p" onclick="doLogin()">ورود</button></div>'}
 function doLogin(){K=$('pw').value;localStorage.setItem('k',K);load().catch(function(e){toast(e.message)})}
-async function load(){D=await call({action:'state'});render()}
+async function load(){var n=0;for(;;){var r=await call({action:'state'});if(D&&r.rev<D.rev&&n<6){n++;await new Promise(function(x){setTimeout(x,1500)});continue}D=r;break}render()}
 function render(){var s=D.settings,h='';
 h+='<div class="row sp"><h1>🤖 پنل مدیریت ربات</h1><button onclick="load()">بروزرسانی</button></div>';
 h+='<div class="card"><div class="row"><span class="chip">کانال‌ها: <b>'+D.channels.length+'</b></span><span class="chip">پست‌شده: <b>'+D.doneCount+'</b></span><span class="chip">وضعیت: <b>'+(s.paused?'متوقف':'فعال')+'</b></span></div><div style="height:10px"></div><div class="row"><button class="'+(s.paused?'p':'d')+'" onclick="act({action:\'settings\',settings:{paused:'+!s.paused+'}},\'ثبت شد\')">'+(s.paused?'▶ روشن کردن ربات':'⏸ توقف کل ربات')+'</button></div></div>';
