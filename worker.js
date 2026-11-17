@@ -44,11 +44,12 @@ function init(env) {
 }
 const DEF_WORDS = ["addon","mod","pack","weapons","furniture","dragon","magic","food","cars","mobs","armor","biome","tools","pets","city","robot","sword"];
 
-async function rub(method, body) {
+async function rub(method, body, ms) {
   const r = await fetch("https://botapi.rubika.ir/v3/" + CFG.TOKEN + "/" + method, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: ms ? AbortSignal.timeout(ms) : undefined,
   });
   const t = await r.text();
   if (!r.ok) throw new Error("Rubika " + method + " " + r.status + " " + t.slice(0, 100));
@@ -178,19 +179,22 @@ async function loadState(env) {
 // فقط وقتی چیزی عوض شده باشه می‌نویسه (پلن رایگان فقط ۱۰۰۰ نوشتن در روز اجازه می‌ده)
 async function saveState(env, s) {
   const j = JSON.stringify(s);
-  if (SNAPS.get(s) === j) return;
-  try { await env.STATE.put("state", j); SNAPS.set(s, j); }
-  catch (e) { console.log("KV put failed: " + e.message); }
+  if (SNAPS.get(s) === j) return true;
+  try { await env.STATE.put("state", j); SNAPS.set(s, j); return true; }
+  catch (e) { console.log("KV put failed: " + e.message); return false; }
 }
 
+const NAME_FAIL = new Map();
 async function chatName(state, id) {
   if (state.names[id]) return state.names[id];
+  if ((NAME_FAIL.get(id) || 0) > Date.now() - 600000) return "";
   try {
-    const j = await rub("getChat", { chat_id: id });
+    const j = await rub("getChat", { chat_id: id }, 4000);
     const c = (j.data && j.data.chat) || j.data || {};
     const n = c.title || [c.first_name, c.last_name].filter(Boolean).join(" ") || c.username || "";
     if (n) { state.names[id] = n; return n; }
   } catch (e) {}
+  NAME_FAIL.set(id, Date.now());
   return "";
 }
 async function label(state, id) {
@@ -271,21 +275,22 @@ async function runLogged(env, opts) {
   return await run(env, opts);
 }
 
+async function buildState(env, st) {
+  await Promise.all([...st.channels.map(c => c.id), ...st.blocked].map(x => chatName(st, x)));
+  await saveState(env, st);
+  return {
+    channels: st.channels.map((c, i) => ({ ...c, name: st.names[c.id] || "", bannerOn: bannerOn(c, i) })),
+    blocked: st.blocked.map(x => ({ id: x, name: st.names[x] || "" })),
+    settings: S, logs: st.logs, doneCount: st.done.length,
+    hasBanner: !!(await env.STATE.get("banner")), now: Date.now(),
+  };
+}
+
 async function api(env, b) {
   const st = await loadState(env);
   const id = b.id;
   switch (b.action) {
-    case "state": {
-      for (const c of st.channels) await chatName(st, c.id);
-      for (const x of st.blocked) await chatName(st, x);
-      await saveState(env, st);
-      return {
-        channels: st.channels.map((c, i) => ({ ...c, name: st.names[c.id] || "", bannerOn: bannerOn(c, i) })),
-        blocked: st.blocked.map(x => ({ id: x, name: st.names[x] || "" })),
-        settings: S, logs: st.logs, doneCount: st.done.length,
-        hasBanner: !!(await env.STATE.get("banner")), now: Date.now(),
-      };
-    }
+    case "state": return await buildState(env, st);
     case "setChannel": {
       const c = st.channels.find(x => x.id === id);
       if (!c) throw new Error("کانال پیدا نشد");
@@ -342,8 +347,8 @@ async function api(env, b) {
     }
     default: throw new Error("دستور نامعتبر");
   }
-  await saveState(env, st);
-  return "ok";
+  if (!(await saveState(env, st))) throw new Error("ذخیره نشد؛ احتمالاً سقف نوشتن روزانه‌ی کلودفلر پر شده و بعد از ساعت ۳:۳۰ بامداد به وقت تهران باز می‌شود.");
+  return await buildState(env, st);
 }
 
 export default {

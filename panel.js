@@ -22,9 +22,9 @@ textarea{min-height:70px;resize:vertical}label{font-size:12px;color:var(--m);dis
 var K=localStorage.getItem('k')||'',D=null;
 function $(i){return document.getElementById(i)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-async function call(b){var r=await fetch('/api',{method:'POST',headers:{'x-key':K,'Content-Type':'application/json'},body:JSON.stringify(b)});if(r.status==403){localStorage.removeItem('k');K='';login();throw new Error('رمز اشتباه است')}var j=await r.json();if(j.error)throw new Error(j.error);return j}
+async function call(b){var ac=new AbortController(),tm=setTimeout(function(){ac.abort()},60000);try{var r=await fetch('/api',{method:'POST',headers:{'x-key':K,'Content-Type':'application/json'},body:JSON.stringify(b),signal:ac.signal});if(r.status==403){localStorage.removeItem('k');K='';login();throw new Error('رمز اشتباه است')}var j=await r.json();if(j.error)throw new Error(j.error);return j}catch(e){if(e.name==='AbortError')throw new Error('پاسخی از سرور نیامد');throw e}finally{clearTimeout(tm)}}
 function toast(t){var e=$('toast');e.textContent=t;e.className='show';setTimeout(function(){e.className=''},4000)}
-async function act(b,msg){try{toast('در حال انجام...');var r=await call(b);toast(msg||(typeof r==='string'?r:'انجام شد'));await load();return r}catch(e){toast('خطا: '+e.message)}}
+async function act(b,msg){try{toast('در حال انجام...');var r=await call(b);if(r&&r.channels){D=r;render()}else await load();toast(msg||(typeof r==='string'&&r!=='ok'?r:'انجام شد'))}catch(e){toast('خطا: '+e.message)}}
 function ago(t){if(!t)return'هنوز پستی نرفته';var m=Math.round((D.now-t)/60000);if(m<1)return'همین الان';if(m<60)return m+' دقیقه پیش';var h=Math.round(m/60);return h<48?h+' ساعت پیش':Math.round(h/24)+' روز پیش'}
 function login(){$('app').innerHTML='<div class="card"><h1>ورود به پنل</h1><label>رمز (همان SECRET)</label><input id="pw" type="password"><div style="height:10px"></div><button class="p" onclick="doLogin()">ورود</button></div>'}
 function doLogin(){K=$('pw').value;localStorage.setItem('k',K);load().catch(function(e){toast(e.message)})}
