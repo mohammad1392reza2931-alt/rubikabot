@@ -1,5 +1,6 @@
 // ربات کانال روبیکا - Cloudflare Worker
 import { BANNER_B64 } from "./banner.js";
+import { PANEL_HTML } from "./panel.js";
 
 const BANNER_TEXT = `💛BINDO💛
 
@@ -18,11 +19,17 @@ const BANNER_TEXT = `💛BINDO💛
 پس اینجا جای تو هست😉❤️👇
 
 @BINDO1392`;
-const BANNER_EVERY_MS = 24 * 3600 * 1000;
 
 // کلیدها داخل خود کد نیستن؛ توی تنظیمات کلودفلر (Secrets) ذخیره می‌شن
-let CFG = {};
+let CFG = {}, ENV = null, S = {};
+const SNAPS = new WeakMap();
+function applySettings(st) {
+  S = Object.assign({ intervalMin: 15, bannerHours: 24, maxMb: 10, showAuthor: false, paused: false, words: DEF_WORDS, bannerText: BANNER_TEXT }, st.settings || {});
+  if (!S.words || !S.words.length) S.words = DEF_WORDS;
+}
+const bannerOn = (c, i) => (c.banner !== undefined ? c.banner : i > 0);
 function init(env) {
+  ENV = env;
   CFG = {
     TOKEN: env.RUBIKA_TOKEN,
     CF_KEY: env.CF_KEY,
@@ -35,7 +42,7 @@ function init(env) {
     SHOW_AUTHOR: false,
   };
 }
-const WORDS = ["addon","mod","pack","weapons","furniture","dragon","magic","food","cars","mobs","armor","biome","tools","pets","city","robot","sword"];
+const DEF_WORDS = ["addon","mod","pack","weapons","furniture","dragon","magic","food","cars","mobs","armor","biome","tools","pets","city","robot","sword"];
 
 async function rub(method, body) {
   const r = await fetch("https://botapi.rubika.ir/v3/" + CFG.TOKEN + "/" + method, {
@@ -73,7 +80,7 @@ async function upload(type, blob, name) {
 
 async function bestFile(id) {
   const data = (await cf("/v1/mods/" + id + "/files", { pageSize: 10 })).data;
-  const ok = data.filter(f => f.downloadUrl && (f.fileLength || 0) <= CFG.MAX_MB * 1024 * 1024);
+  const ok = data.filter(f => f.downloadUrl && (f.fileLength || 0) <= S.maxMb * 1024 * 1024);
   if (!ok.length) return null;
   ok.sort((a, b) => String(b.fileDate).localeCompare(String(a.fileDate)));
   return ok[0];
@@ -82,7 +89,7 @@ async function bestFile(id) {
 async function pickMod(done, log) {
   const idxs = [0, 10, 20, 30, 40];
   for (let i = 0; i < 5; i++) {
-    const w = WORDS[Math.floor(Math.random() * WORDS.length)];
+    const w = S.words[Math.floor(Math.random() * S.words.length)];
     const idx = idxs[Math.floor(Math.random() * idxs.length)];
     const p = { gameId: 78022, searchFilter: w, pageSize: 10 };
     if (idx) p.index = idx;
@@ -121,7 +128,7 @@ async function postTo(ch, m, f, log, footer) {
     log.push("AI error: " + e.message);
     text = "🔥 ادان جدید ماینکرفت بدرک\n\n" + m.name + "\n" + m.summary;
   }
-  if (CFG.SHOW_AUTHOR && m.authors && m.authors.length) text += "\n\n👤 سازنده: " + m.authors[0].name;
+  if (S.showAuthor && m.authors && m.authors.length) text += "\n\n👤 سازنده: " + m.authors[0].name;
   if (footer) text += "\n\n" + footer;
 
   try {
@@ -143,16 +150,17 @@ async function postTo(ch, m, f, log, footer) {
   }
 }
 
-function bannerBlob() {
-  const bin = atob(BANNER_B64);
+function bannerBlob(b64) {
+  const bin = atob(b64 || BANNER_B64);
   const arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
   return new Blob([arr], { type: "image/jpeg" });
 }
 
 async function sendBanner(ch) {
-  const fid = await upload("Image", bannerBlob(), "banner.jpg");
-  await rub("sendFile", { chat_id: ch, file_id: fid, text: BANNER_TEXT });
+  const custom = await ENV.STATE.get("banner");
+  const fid = await upload("Image", bannerBlob(custom), "banner.jpg");
+  await rub("sendFile", { chat_id: ch, file_id: fid, text: S.bannerText });
 }
 
 async function loadState(env) {
@@ -161,9 +169,19 @@ async function loadState(env) {
   s.done = s.done || [];
   s.blocked = s.blocked || [];
   s.names = s.names || {};
+  s.settings = s.settings || {};
+  s.logs = s.logs || [];
+  applySettings(s);
+  SNAPS.set(s, JSON.stringify(s));
   return s;
 }
-const saveState = (env, s) => env.STATE.put("state", JSON.stringify(s));
+// فقط وقتی چیزی عوض شده باشه می‌نویسه (پلن رایگان فقط ۱۰۰۰ نوشتن در روز اجازه می‌ده)
+async function saveState(env, s) {
+  const j = JSON.stringify(s);
+  if (SNAPS.get(s) === j) return;
+  try { await env.STATE.put("state", j); SNAPS.set(s, j); }
+  catch (e) { console.log("KV put failed: " + e.message); }
+}
 
 async function chatName(state, id) {
   if (state.names[id]) return state.names[id];
@@ -197,15 +215,14 @@ async function discover(state, log) {
 async function run(env, opts) {
   const log = [];
   const state = await loadState(env);
+  if (S.paused && !opts.now && !opts.id) return "paused";
   await discover(state, log);
-  if (!state.channels.length) {
-    await saveState(env, state);
-    return "کانالی پیدا نشد. توی هر کانال یک پیام بنویس و دوباره اجرا کن.";
-  }
+  await saveState(env, state); // فقط اگه کانال جدیدی پیدا شده باشه می‌نویسه
+  if (!state.channels.length) return "کانالی پیدا نشد. توی هر کانال یک پیام بنویس و دوباره اجرا کن.";
   const now = Date.now();
-  // بنر: هر ۲۴ ساعت یک بار برای همه‌ی کانال‌ها به جز کانال اول
-  if (!opts.now) {
-    const dueB = state.channels.filter((c, i) => i > 0 && now - (c.bannerLast || 0) >= BANNER_EVERY_MS);
+  // بنر: هر چند ساعت یک بار برای کانال‌هایی که بنرشون روشنه
+  if (!opts.now && !opts.id) {
+    const dueB = state.channels.filter((c, i) => bannerOn(c, i) && !c.paused && now - (c.bannerLast || 0) >= S.bannerHours * 3600000);
     if (dueB.length) {
       const c = dueB[0];
       c.bannerLast = now;
@@ -216,47 +233,135 @@ async function run(env, opts) {
       } catch (e) {
         const fresh = await loadState(env);
         const fc = fresh.channels.find(x => x.id === c.id);
-        if (fc) fc.bannerLast = now - (BANNER_EVERY_MS - 10 * 60000); // ۱۰ دقیقه‌ی دیگه دوباره تلاش می‌کنه
+        if (fc) fc.bannerLast = now - (S.bannerHours * 3600000 - 10 * 60000);
         await saveState(env, fresh);
         return "banner error: " + e.message;
       }
     }
   }
   let target = null;
-  if (opts.now) {
-    target = state.channels[opts.now - 1];
-    if (!target) { await saveState(env, state); return "کانالی با این شماره نیست."; }
+  if (opts.now || opts.id) {
+    target = opts.id ? state.channels.find(c => c.id === opts.id) : state.channels[opts.now - 1];
+    if (!target) return "کانالی با این شماره نیست.";
   } else {
-    const due = state.channels
-      .filter(c => now - c.last >= CFG.INTERVAL_MIN * 60000)
-      .sort((a, b) => a.last - b.last);
-    target = due[0];
+    // هر دقیقه نوبت یک کانال است؛ بدون نیاز به نوشتن توی حافظه
+    const el = state.channels.filter(c => !c.paused);
+    const win = Math.max(S.intervalMin, el.length);
+    target = el[Math.floor(now / 60000) % win];
   }
-  if (!target) { await saveState(env, state); return "not yet"; }
-
-  target.last = now;
-  await saveState(env, state);
+  if (!target) return "not yet";
 
   const [m, f] = await pickMod(state.done, log);
   if (!m) { log.push("ماد مناسب پیدا نشد."); return log.join("\n"); }
   await postTo(target.id, m, f, log, target.footer);
 
+  // فقط یک نوشتن برای هر پست
   const fresh = await loadState(env);
+  const fc = fresh.channels.find(c => c.id === target.id);
+  if (fc) fc.last = now;
   fresh.done.push(m.id);
   if (fresh.done.length > 600) fresh.done = fresh.done.slice(-600);
+  fresh.logs.push({ t: now, m: log.join(" | ").slice(0, 300) });
+  fresh.logs = fresh.logs.slice(-60);
   await saveState(env, fresh);
   return log.join("\n");
+}
+
+async function runLogged(env, opts) {
+  return await run(env, opts);
+}
+
+async function api(env, b) {
+  const st = await loadState(env);
+  const id = b.id;
+  switch (b.action) {
+    case "state": {
+      for (const c of st.channels) await chatName(st, c.id);
+      for (const x of st.blocked) await chatName(st, x);
+      await saveState(env, st);
+      return {
+        channels: st.channels.map((c, i) => ({ ...c, name: st.names[c.id] || "", bannerOn: bannerOn(c, i) })),
+        blocked: st.blocked.map(x => ({ id: x, name: st.names[x] || "" })),
+        settings: S, logs: st.logs, doneCount: st.done.length,
+        hasBanner: !!(await env.STATE.get("banner")), now: Date.now(),
+      };
+    }
+    case "setChannel": {
+      const c = st.channels.find(x => x.id === id);
+      if (!c) throw new Error("کانال پیدا نشد");
+      for (const k of ["footer", "paused", "banner"]) if (k in (b.patch || {})) c[k] = b.patch[k];
+      if (c.footer === "") delete c.footer;
+      break;
+    }
+    case "remove": {
+      const i = st.channels.findIndex(x => x.id === id);
+      if (i < 0) throw new Error("کانال پیدا نشد");
+      st.blocked.push(id); st.channels.splice(i, 1);
+      break;
+    }
+    case "unblock": {
+      if (st.channels.length >= CFG.MAX_CHANNELS) throw new Error("ظرفیت کانال‌ها پر است");
+      st.blocked = st.blocked.filter(x => x !== id);
+      if (!st.channels.find(x => x.id === id)) st.channels.push({ id, last: 0 });
+      break;
+    }
+    case "add": {
+      if (!/^c0[A-Za-z0-9]+$/.test(id || "")) throw new Error("آیدی معتبر نیست");
+      if (st.channels.length >= CFG.MAX_CHANNELS) throw new Error("ظرفیت کانال‌ها پر است");
+      st.blocked = st.blocked.filter(x => x !== id);
+      if (!st.channels.find(x => x.id === id)) st.channels.push({ id, last: 0 });
+      break;
+    }
+    case "scan": {
+      const log = [];
+      await discover(st, log);
+      await saveState(env, st);
+      return log.join("\n") || "کانال جدیدی پیدا نشد";
+    }
+    case "settings": {
+      const n = b.settings || {}, o = st.settings;
+      for (const k of ["intervalMin", "bannerHours", "maxMb"]) if (n[k] !== undefined) o[k] = Math.max(1, Number(n[k]) || 1);
+      if (n.paused !== undefined) o.paused = !!n.paused;
+      if (n.showAuthor !== undefined) o.showAuthor = !!n.showAuthor;
+      if (Array.isArray(n.words)) o.words = n.words.slice(0, 100);
+      if (typeof n.bannerText === "string") o.bannerText = n.bannerText;
+      break;
+    }
+    case "bannerImage": {
+      if (b.clear) await env.STATE.delete("banner");
+      else if (b.b64) await env.STATE.put("banner", b.b64);
+      return "ok";
+    }
+    case "clearLogs": st.logs = []; break;
+    case "post": return await runLogged(env, { id });
+    case "banner": {
+      const c = st.channels.find(x => x.id === id);
+      if (!c) throw new Error("کانال پیدا نشد");
+      await sendBanner(id);
+      return "بنر ارسال شد";
+    }
+    default: throw new Error("دستور نامعتبر");
+  }
+  await saveState(env, st);
+  return "ok";
 }
 
 export default {
   async scheduled(event, env, ctx) {
     init(env);
-    ctx.waitUntil(run(env, {}));
+    ctx.waitUntil(runLogged(env, {}));
   },
   async fetch(request, env) {
     init(env);
     const u = new URL(request.url);
     const h = { "Content-Type": "text/plain; charset=utf-8" };
+    if (u.pathname === "/panel") return new Response(PANEL_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    if (u.pathname === "/api") {
+      if (request.headers.get("x-key") !== CFG.SECRET) return new Response("{}", { status: 403 });
+      const j = { "Content-Type": "application/json; charset=utf-8" };
+      try { return new Response(JSON.stringify(await api(env, await request.json())), { headers: j }); }
+      catch (e) { return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: j }); }
+    }
     if (u.searchParams.get("key") !== CFG.SECRET) return new Response("no", { status: 403 });
 
     if (u.searchParams.get("list")) {
