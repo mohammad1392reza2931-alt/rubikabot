@@ -170,6 +170,7 @@ async function loadState(env) {
   s.done = s.done || [];
   s.blocked = s.blocked || [];
   s.names = s.names || {};
+  s.ignored = s.ignored || [];
   s.settings = s.settings || {};
   s.logs = s.logs || [];
   applySettings(s);
@@ -208,7 +209,7 @@ async function discover(state, log) {
     const raw = JSON.stringify(await rub("getUpdates", { limit: 100 }));
     const ids = [...new Set([...raw.matchAll(/"chat_id":"(c0[^"]+)"/g)].map(x => x[1]))];
     for (const id of ids) {
-      if (!state.channels.find(c => c.id === id) && !state.blocked.includes(id) && state.channels.length < CFG.MAX_CHANNELS) {
+      if (!state.channels.find(c => c.id === id) && !state.blocked.includes(id) && !state.ignored.includes(id) && state.channels.length < CFG.MAX_CHANNELS) {
         state.channels.push({ id, last: 0 });
         log.push("کانال جدید اضافه شد");
       }
@@ -308,6 +309,7 @@ async function api(env, b) {
     case "unblock": {
       if (st.channels.length >= CFG.MAX_CHANNELS) throw new Error("ظرفیت کانال‌ها پر است");
       st.blocked = st.blocked.filter(x => x !== id);
+      st.ignored = st.ignored.filter(x => x !== id);
       if (!st.channels.find(x => x.id === id)) st.channels.push({ id, last: 0 });
       break;
     }
@@ -315,6 +317,7 @@ async function api(env, b) {
       if (!/^c0[A-Za-z0-9]+$/.test(id || "")) throw new Error("آیدی معتبر نیست");
       if (st.channels.length >= CFG.MAX_CHANNELS) throw new Error("ظرفیت کانال‌ها پر است");
       st.blocked = st.blocked.filter(x => x !== id);
+      st.ignored = st.ignored.filter(x => x !== id);
       if (!st.channels.find(x => x.id === id)) st.channels.push({ id, last: 0 });
       break;
     }
@@ -337,6 +340,19 @@ async function api(env, b) {
       if (b.clear) await env.STATE.delete("banner");
       else if (b.b64) await env.STATE.put("banner", b.b64);
       return "ok";
+    }
+    case "forget": {
+      st.blocked = st.blocked.filter(x => x !== id);
+      if (!st.ignored.includes(id)) st.ignored.push(id);
+      st.ignored = st.ignored.slice(-500);
+      delete st.names[id];
+      break;
+    }
+    case "forgetAll": {
+      for (const x of st.blocked) { if (!st.ignored.includes(x)) st.ignored.push(x); delete st.names[x]; }
+      st.ignored = st.ignored.slice(-500);
+      st.blocked = [];
+      break;
     }
     case "clearLogs": st.logs = []; break;
     case "post": return await runLogged(env, { id });
