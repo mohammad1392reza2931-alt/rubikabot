@@ -23,9 +23,11 @@ const BANNER_TEXT = `💛BINDO💛
 // کلیدها داخل خود کد نیستن؛ توی تنظیمات کلودفلر (Secrets) ذخیره می‌شن
 let CFG = {}, ENV = null, S = {};
 const SNAPS = new WeakMap();
+const DEF_PROMPT = "یک پست کوتاه، جذاب و هیجان‌انگیز فارسی (حداکثر ۴ خط) برای معرفی این ادان ماینکرفت بدرک بنویس. فقط به فارسی و فقط متن پست، بدون لینک. اسم: {name}. توضیح: {summary}";
 function applySettings(st) {
-  S = Object.assign({ intervalMin: 15, bannerHours: 24, maxMb: 10, showAuthor: false, paused: false, words: DEF_WORDS, bannerText: BANNER_TEXT }, st.settings || {});
+  S = Object.assign({ intervalMin: 15, bannerHours: 24, maxMb: 10, showAuthor: false, paused: false, words: DEF_WORDS, bannerText: BANNER_TEXT, descMode: "ai", aiPrompt: DEF_PROMPT, descMax: 0, showName: false, showFileInfo: false, defFooter: "", defFileFooter: "" }, st.settings || {});
   if (!S.words || !S.words.length) S.words = DEF_WORDS;
+  if (!S.aiPrompt) S.aiPrompt = DEF_PROMPT;
 }
 const bannerOn = (c, i) => (c.banner !== undefined ? c.banner : i > 0);
 function init(env) {
@@ -108,7 +110,7 @@ async function pickMod(done, log) {
 }
 
 async function aiText(m) {
-  const prompt = "یک پست کوتاه، جذاب و هیجان‌انگیز فارسی (حداکثر ۴ خط) برای معرفی این ادان ماینکرفت بدرک بنویس. فقط به فارسی و فقط متن پست، بدون لینک. اسم: " + m.name + ". توضیح: " + m.summary;
+  const prompt = S.aiPrompt.split("{name}").join(m.name).split("{summary}").join(m.summary);
   const url = "https://api.cloudflare.com/client/v4/accounts/" + CFG.AI_ACCOUNT + "/ai/run/@cf/meta/llama-3.3-70b-instruct-fp8-fast";
   const r = await fetch(url, {
     method: "POST",
@@ -122,29 +124,37 @@ async function aiText(m) {
   return t;
 }
 
-async function postTo(ch, m, f, log, footer) {
-  let text;
-  try { text = await aiText(m); }
-  catch (e) {
-    log.push("AI error: " + e.message);
-    text = "🔥 ادان جدید ماینکرفت بدرک\n\n" + m.name + "\n" + m.summary;
+async function postTo(ch, m, f, log, footer, fileFooter) {
+  let text = "";
+  if (S.descMode === "original") text = m.summary || "";
+  else if (S.descMode !== "none") {
+    try { text = await aiText(m); }
+    catch (e) {
+      log.push("AI error: " + e.message);
+      text = "🔥 ادان جدید ماینکرفت بدرک\n\n" + m.name + "\n" + m.summary;
+    }
   }
-  if (S.showAuthor && m.authors && m.authors.length) text += "\n\n👤 سازنده: " + m.authors[0].name;
-  if (footer) text += "\n\n" + footer;
+  if (S.descMax && text.length > S.descMax) text = text.slice(0, S.descMax).trimEnd() + "…";
+  if (S.showName) text = "🧩 " + m.name + (text ? "\n\n" + text : "");
+  if (S.showAuthor && m.authors && m.authors.length) text += (text ? "\n\n" : "") + "👤 سازنده: " + m.authors[0].name;
+  const ft = footer || S.defFooter;
+  if (ft) text += (text ? "\n\n" : "") + ft;
 
   try {
     const img = await download(m.logo.url);
     const fid = await upload("Image", img, "a.jpg");
-    await rub("sendFile", { chat_id: ch, file_id: fid, text });
+    await rub("sendFile", text ? { chat_id: ch, file_id: fid, text } : { chat_id: ch, file_id: fid });
   } catch (e) {
     log.push("image error: " + e.message);
-    try { await rub("sendMessage", { chat_id: ch, text }); }
-    catch (x) { log.push("message error: " + x.message); }
+    if (text) { try { await rub("sendMessage", { chat_id: ch, text }); } catch (x) { log.push("message error: " + x.message); } }
   }
   try {
     const blob = await download(f.downloadUrl);
     const fid = await upload("File", blob, f.fileName);
-    await rub("sendFile", { chat_id: ch, file_id: fid });
+    let cap = S.showFileInfo ? "📦 " + f.fileName + " (" + ((f.fileLength || 0) / 1048576).toFixed(1) + " MB)" : "";
+    const ff = fileFooter || S.defFileFooter;
+    if (ff) cap += (cap ? "\n\n" : "") + ff;
+    await rub("sendFile", cap ? { chat_id: ch, file_id: fid, text: cap } : { chat_id: ch, file_id: fid });
     log.push("OK: " + m.name);
   } catch (e) {
     log.push("file error: " + e.message);
@@ -259,7 +269,7 @@ async function run(env, opts) {
 
   const [m, f] = await pickMod(state.done, log);
   if (!m) { log.push("ماد مناسب پیدا نشد."); return log.join("\n"); }
-  await postTo(target.id, m, f, log, target.footer);
+  await postTo(target.id, m, f, log, target.footer, target.fileFooter);
 
   // فقط یک نوشتن برای هر پست
   const fresh = await loadState(env);
@@ -296,8 +306,9 @@ async function api(env, b) {
     case "setChannel": {
       const c = st.channels.find(x => x.id === id);
       if (!c) throw new Error("کانال پیدا نشد");
-      for (const k of ["footer", "paused", "banner"]) if (k in (b.patch || {})) c[k] = b.patch[k];
+      for (const k of ["footer", "fileFooter", "paused", "banner"]) if (k in (b.patch || {})) c[k] = b.patch[k];
       if (c.footer === "") delete c.footer;
+      if (c.fileFooter === "") delete c.fileFooter;
       break;
     }
     case "remove": {
@@ -334,6 +345,11 @@ async function api(env, b) {
       if (n.showAuthor !== undefined) o.showAuthor = !!n.showAuthor;
       if (Array.isArray(n.words)) o.words = n.words.slice(0, 100);
       if (typeof n.bannerText === "string") o.bannerText = n.bannerText;
+      if (["ai", "original", "none"].includes(n.descMode)) o.descMode = n.descMode;
+      if (typeof n.aiPrompt === "string") o.aiPrompt = n.aiPrompt;
+      if (n.descMax !== undefined) o.descMax = Math.max(0, Math.min(4000, Number(n.descMax) || 0));
+      for (const k of ["showName", "showFileInfo"]) if (n[k] !== undefined) o[k] = !!n[k];
+      for (const k of ["defFooter", "defFileFooter"]) if (typeof n[k] === "string") o[k] = n[k].slice(0, 1000);
       break;
     }
     case "bannerImage": {
